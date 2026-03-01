@@ -419,6 +419,205 @@ input {
   background: rgba(255, 255, 255, 0.9);
 }
 
+/* ── Simulation report launcher card ── */
+.sim-report-card {
+  position: absolute;
+  top: 24px;
+  left: 12px;
+  width: min(350px, calc(100% - 24px));
+  z-index: 7;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(7, 7, 7, 0.9);
+  box-shadow: 0 16px 36px rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  padding: 10px;
+  display: grid;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.sim-report-card.error {
+  border-color: rgba(255, 120, 120, 0.45);
+}
+
+.sim-report-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.sim-report-card-title {
+  margin: 0;
+  font-size: 0.77rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.9);
+}
+
+.sim-report-card-badge {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(255, 255, 255, 0.8);
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  padding: 2px 8px;
+}
+
+.sim-report-card-meta {
+  margin: 0;
+  font-size: 0.68rem;
+  color: rgba(255, 255, 255, 0.58);
+}
+
+.sim-report-card-snippet {
+  margin: 0;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(240, 240, 240, 0.9);
+  font-size: 0.63rem;
+  line-height: 1.4;
+  max-height: 126px;
+  overflow: auto;
+  white-space: pre;
+  font-family: "Google Sans Code", "Google Sans", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.sim-report-card-open {
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.09);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 7px 10px;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease;
+}
+
+.sim-report-card-open:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.sim-report-card-loading {
+  margin: 0;
+  font-size: 0.74rem;
+  color: rgba(255, 255, 255, 0.65);
+}
+
+.sim-report-card-error {
+  margin: 0;
+  font-size: 0.72rem;
+  color: #ffb0b0;
+  white-space: pre-wrap;
+}
+
+/* ── Simulation report modal ── */
+.sim-report-modal-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 22;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(3px);
+}
+
+.sim-report-modal {
+  width: min(940px, 100%);
+  max-height: 86%;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(10, 10, 10, 0.98);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.sim-report-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sim-report-modal-title {
+  color: rgba(248, 248, 248, 0.95);
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.sim-report-modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sim-report-modal-btn {
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+  border-radius: 7px;
+  padding: 6px 10px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.sim-report-modal-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+
+.sim-report-modal-close {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: none;
+  background: rgba(255, 255, 255, 0.1);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+}
+
+.sim-report-modal-close:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.sim-report-modal-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px;
+}
+
+.sim-report-modal-text {
+  margin: 0;
+  color: rgba(236, 236, 236, 0.92);
+  font-size: 0.68rem;
+  line-height: 1.4;
+  white-space: pre;
+  font-family: "Google Sans Code", "Google Sans", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
 /* ── View Journey button (inside terminal) ── */
 .sim-journey-btn {
   margin-top: 12px;
@@ -732,6 +931,18 @@ input {
 .graph-call-card-audio {
   width: 1px;
   height: 1px;
+}
+
+@media (max-width: 760px) {
+  .sim-report-card {
+    top: 22px;
+    left: 10px;
+    width: min(94%, 400px);
+  }
+
+  .sim-report-modal {
+    max-height: 90%;
+  }
 }
 
 @keyframes graph-panel-sling-in {

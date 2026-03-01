@@ -262,7 +262,7 @@ def _planner_headers() -> dict[str, str]:
 
 
 def _report_endpoint() -> str:
-    raw = os.getenv("REPORT_MODEL_ENDPOINT", DEFAULT_REPORT_ENDPOINT).strip().rstrip("/")
+    raw = os.getenv("REPORT_MODEL_ENDPOINT", _planner_endpoint()).strip().rstrip("/")
     if raw.endswith("/v1/chat/completions"):
         return raw
     if raw:
@@ -271,7 +271,7 @@ def _report_endpoint() -> str:
 
 
 def _report_model_id() -> str:
-    return os.getenv("REPORT_MODEL_ID", DEFAULT_REPORT_MODEL_ID).strip()
+    return os.getenv("REPORT_MODEL_ID", _planner_model_id()).strip()
 
 
 def _report_api_key() -> str:
@@ -1359,10 +1359,7 @@ SUPERMEMORY_BASE_URL = "https://api.supermemory.ai"
 SIMULATION_GRAPH_PATH = Path(__file__).resolve().parent / "graph.json"
 SIMULATION_REPORTS_DIR = Path(__file__).resolve().parent / "reports"
 SIMULATION_DAYS = 5
-SIMULATION_DEFAULT_STIMULUS = (
-    "BREAKING: A leaked Texas legislative proposal suggests a 20% tax credit "
-    "for small businesses, offset by a 5% tax hike on luxury properties over $2M."
-)
+SIMULATION_DEFAULT_STIMULUS = ""
 SIMULATION_NEWS_SPARK = SIMULATION_DEFAULT_STIMULUS
 SIMULATION_MODAL_ENDPOINT = os.getenv(
     "SIM_MODAL_ENDPOINT",
@@ -1531,11 +1528,74 @@ def _build_report_data_context(
     return "\n".join(sections)
 
 
+SCENARIO_KEYWORD_STOPWORDS = {
+    "a",
+    "about",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "by",
+    "for",
+    "from",
+    "has",
+    "have",
+    "in",
+    "into",
+    "is",
+    "it",
+    "its",
+    "of",
+    "on",
+    "or",
+    "that",
+    "the",
+    "their",
+    "this",
+    "to",
+    "was",
+    "were",
+    "with",
+}
+
+
+def _scenario_keywords(text: str, *, limit: int = 12) -> list[str]:
+    tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9'-]{2,}", str(text or "").lower())
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for token in tokens:
+        if token in SCENARIO_KEYWORD_STOPWORDS:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        deduped.append(token)
+    deduped.sort(key=len, reverse=True)
+    return deduped[:limit]
+
+
 def _report_has_scenario_drift(report_markdown: str, news_spark: str) -> tuple[bool, str]:
     report_lower = str(report_markdown or "").lower()
-    stimulus_lower = str(news_spark or "").lower()
-    if "texas" in report_lower and "texas" not in stimulus_lower:
-        return True, "report mentions Texas but scenario stimulus does not"
+    if not report_lower.strip():
+        return True, "report is empty"
+
+    keywords = _scenario_keywords(news_spark, limit=12)
+    if not keywords:
+        return False, ""
+    matched = [keyword for keyword in keywords if keyword in report_lower]
+    if len(keywords) < 4:
+        required_matches = 1
+    elif len(keywords) < 8:
+        required_matches = 2
+    else:
+        required_matches = 3
+    if len(matched) < required_matches:
+        return (
+            True,
+            f"report is weakly grounded in scenario context ({len(matched)}/{required_matches} keyword matches)",
+        )
     return False, ""
 
 
@@ -1555,7 +1615,7 @@ async def _call_report_llm(
     strict_block = (
         "STRICT GROUNDING OVERRIDE:\n"
         "- Scenario fidelity is mandatory.\n"
-        "- Do not introduce Texas unless explicitly in the scenario text.\n"
+        "- Do not introduce locations, policy details, or numeric claims absent from scenario/run data.\n"
         if strict_grounding
         else ""
     )
@@ -1708,6 +1768,16 @@ async def _run_simulation_task(
     _sim_report = {}
     _sim_nodes = []
     resolved_stimulus = _resolve_simulation_stimulus(stimulus)
+    if not resolved_stimulus:
+        _sim_status = {
+            "state": "error",
+            "progress": 0,
+            "total": 0,
+            "day": 0,
+            "error": "Simulation stimulus is required.",
+            "talk_edges": [],
+        }
+        return
 
     try:
         if graph_data and graph_data.get("nodes"):
@@ -1877,11 +1947,17 @@ async def simulation_run(background_tasks: BackgroundTasks, body: Optional[Simul
     global _sim_status, _sim_results, _sim_report
     if _sim_status["state"] == "running":
         return {"status": "already_running"}
+    resolved_stimulus = _resolve_simulation_stimulus(body.stimulus if body else None)
+    if not resolved_stimulus:
+        raise HTTPException(
+            status_code=400,
+            detail="stimulus is required for simulation runs.",
+        )
     _sim_status = {"state": "running", "progress": 0, "total": 0, "day": 0, "error": "", "talk_edges": []}
     _sim_results = {}
     _sim_report = {}
     graph_data = {"nodes": body.nodes, "edges": body.edges or []} if body and body.nodes else None
-    background_tasks.add_task(_run_simulation_task, graph_data, body.stimulus if body else None)
+    background_tasks.add_task(_run_simulation_task, graph_data, resolved_stimulus)
     return {"status": "started"}
 
 
@@ -1912,8 +1988,10 @@ async def simulation_report():
 async def simulation_report_file(format: str = "md"):
     if _sim_status["state"] != "done":
         raise HTTPException(status_code=425, detail="Simulation not complete yet.")
-    if not _sim_report or _sim_report.get("error"):
+    if not _sim_report:
         raise HTTPException(status_code=404, detail="Report artifact unavailable.")
+    if _sim_report.get("error"):
+        raise HTTPException(status_code=502, detail=str(_sim_report.get("error")))
 
     normalized = format.lower().strip()
     if normalized not in {"md", "tex"}:

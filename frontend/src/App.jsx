@@ -1719,6 +1719,7 @@ function App() {
   const [graphPanelWidth, setGraphPanelWidth] = useState(GRAPH_PANEL_DEFAULT_WIDTH);
   const [isGraphPanelResizing, setIsGraphPanelResizing] = useState(false);
   const [simulationData, setSimulationData] = useState(null);
+  const [simulationReport, setSimulationReport] = useState(null);
   const [simulationStatus, setSimulationStatus] = useState(null);
   const simulationPollRef = useRef(null);
   const [chatMessages, setChatMessages] = useState([]);
@@ -2351,7 +2352,7 @@ function App() {
     }
   };
 
-  const handleRunSimulation = async (graphOverride = null) => {
+  const handleRunSimulation = async (graphOverride = null, stimulusOverride = "") => {
     if (simulationStatus?.state === "running") {
       return { started: false, error: "Simulation is already running." };
     }
@@ -2366,8 +2367,15 @@ function App() {
       setSimulationStatus({ state: "error", progress: 0, total: 0, day: 0, error: errorText });
       return { started: false, error: errorText };
     }
+    const simulationStimulus = String(stimulusOverride || "").trim();
+    if (!simulationStimulus) {
+      const errorText = "Simulation stimulus is required.";
+      setSimulationStatus({ state: "error", progress: 0, total: 0, day: 0, error: errorText });
+      return { started: false, error: errorText };
+    }
 
     setSimulationData(null);
+    setSimulationReport({ state: "pending" });
     setSimulationStatus({ state: "running", progress: 0, total: 0, day: 0 });
 
     try {
@@ -2376,7 +2384,8 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           nodes: graphPayload.nodes,
-          edges: Array.isArray(graphPayload.edges) ? graphPayload.edges : []
+          edges: Array.isArray(graphPayload.edges) ? graphPayload.edges : [],
+          stimulus: simulationStimulus,
         }),
       });
 
@@ -2407,11 +2416,33 @@ function App() {
         if (status.state === "done") {
           clearInterval(simulationPollRef.current);
           simulationPollRef.current = null;
-          const r = await fetch("/api/simulation/results");
-          if (r.ok) setSimulationData(await r.json());
+          const [resultsResponse, reportResponse] = await Promise.all([
+            fetch("/api/simulation/results"),
+            fetch("/api/simulation/report/file?format=tex")
+          ]);
+          if (resultsResponse.ok) {
+            setSimulationData(await resultsResponse.json());
+          }
+          if (reportResponse.ok) {
+            const reportPayload = await reportResponse.json();
+            setSimulationReport({ state: "ready", ...reportPayload });
+          } else {
+            let detail = "";
+            try {
+              const errorPayload = await reportResponse.json();
+              detail = String(errorPayload?.detail || errorPayload?.error || "").trim();
+            } catch {
+              detail = "";
+            }
+            setSimulationReport({
+              state: "error",
+              error: detail || `Could not load report (${reportResponse.status}).`
+            });
+          }
         } else if (status.state === "error") {
           clearInterval(simulationPollRef.current);
           simulationPollRef.current = null;
+          setSimulationReport(null);
         }
       } catch { /* keep polling */ }
     }, 2000);
@@ -3053,7 +3084,7 @@ function App() {
         ...prev,
         { id: createRuntimeId("assistant"), role: "assistant", content: summaryMessage }
       ]);
-      setEditState({ csvPayload, runId: csvRunId });
+      setEditState({ csvPayload, runId: csvRunId, simulationStimulus: enrichedPrompt });
     }
 
     if (shouldAutoScrollRef.current) {
@@ -3120,7 +3151,11 @@ function App() {
         ...prev,
         { id: createRuntimeId("assistant"), role: "assistant", content: summaryMessage }
       ]);
-      setEditState({ csvPayload, runId: csvRunId });
+      setEditState({
+        csvPayload,
+        runId: csvRunId,
+        simulationStimulus: editState?.simulationStimulus || ""
+      });
     }
 
     if (shouldAutoScrollRef.current) {
@@ -3171,7 +3206,10 @@ function App() {
           window.requestAnimationFrame(() => scrollChatToBottom("smooth", true));
         }
         const csvPrepPromise = prepareCsvForSimulation(currentCsv);
-        const simulationStart = await handleRunSimulation(simulationGraph);
+        const simulationStart = await handleRunSimulation(
+          simulationGraph,
+          editState?.simulationStimulus || promptText
+        );
         const csvPrep = await csvPrepPromise;
         scenarioTextRef.current = "";
         setChatMessages((prev) => [
@@ -3522,6 +3560,7 @@ function App() {
           <GraphCirclePanel
             graph={graphPanelGraph}
             simulationData={simulationData}
+            simulationReport={simulationReport}
             simulationStatus={simulationStatus}
           />
         </section>

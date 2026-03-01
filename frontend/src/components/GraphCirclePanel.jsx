@@ -311,7 +311,20 @@ function SimulationJourney({ data }) {
   );
 }
 
-function GraphCirclePanel({ graph = null, simulationData = null, simulationStatus = null }) {
+function formatReportTimestamp(rawValue) {
+  const text = String(rawValue || "").trim();
+  if (!text) return "";
+  const parsed = new Date(text);
+  if (Number.isNaN(parsed.getTime())) return text;
+  return parsed.toLocaleString();
+}
+
+function GraphCirclePanel({
+  graph = null,
+  simulationData = null,
+  simulationReport = null,
+  simulationStatus = null
+}) {
   const [selectedNodeId, setSelectedNodeId] = useState("");
   const [hoveredNodeId, setHoveredNodeId] = useState("");
   const [hoverPointer, setHoverPointer] = useState({ x: 0, y: 0 });
@@ -337,6 +350,7 @@ function GraphCirclePanel({ graph = null, simulationData = null, simulationStatu
   const [isStartingCall, setIsStartingCall] = useState(false);
   const [useVideoFeed, setUseVideoFeed] = useState(false);
   const [portraitFailed, setPortraitFailed] = useState(false);
+  const [reportModalOpen, setReportModalOpen] = useState(false);
   const selectedNodeIdRef = useRef("");
   const hoveredNodeIdRef = useRef("");
   const hoverPointerRef = useRef({ x: 0, y: 0 });
@@ -1051,6 +1065,22 @@ function GraphCirclePanel({ graph = null, simulationData = null, simulationStatu
   const simError = simulationStatus?.state === "error";
   const simDay = simulationStatus?.day || 0;
   const simBarFill = simRunning ? Math.round((simDay / 5) * 100) : simDone ? 100 : 0;
+  const reportReady = Boolean(
+    simulationReport?.state === "ready" &&
+      typeof simulationReport?.content === "string" &&
+      simulationReport.content.trim()
+  );
+  const reportPending = Boolean(simDone && !reportReady && simulationReport?.state !== "error");
+  const reportErrorMessage =
+    simulationReport?.state === "error"
+      ? String(simulationReport?.error || "Report generation failed.")
+      : "";
+  const reportSnippet = useMemo(() => {
+    if (!reportReady) return "";
+    const lines = String(simulationReport.content || "").split("\n");
+    return lines.slice(0, 14).join("\n");
+  }, [reportReady, simulationReport]);
+  const reportCreatedAt = reportReady ? formatReportTimestamp(simulationReport?.createdAt) : "";
   const showGraphActionButtons = simDone && Boolean(selectedNodeId);
   const canCallSelectedNode = Boolean(simDone && selectedNodeId && selectedSimulation && selectedAvatarAgent);
   const showHoverTooltip = Boolean(hoveredNodeId && hoveredNode);
@@ -1083,6 +1113,21 @@ function GraphCirclePanel({ graph = null, simulationData = null, simulationStatu
       element.muted = false;
       audioHost.appendChild(element);
     }
+  };
+
+  const handleDownloadLatexReport = () => {
+    if (!reportReady) return;
+    const content = String(simulationReport?.content || "");
+    const filename = String(simulationReport?.filename || "simulation-report.tex");
+    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    window.setTimeout(() => window.URL.revokeObjectURL(url), 1500);
   };
 
   const handleStartCall = async () => {
@@ -1182,6 +1227,35 @@ function GraphCirclePanel({ graph = null, simulationData = null, simulationStatu
           </div>
         </div>
       )}
+
+      {simDone ? (
+        <div className={`sim-report-card ${reportReady ? "ready" : ""} ${reportErrorMessage ? "error" : ""}`}>
+          <div className="sim-report-card-head">
+            <p className="sim-report-card-title">Scientific Simulation Report</p>
+            <span className="sim-report-card-badge">LaTeX</span>
+          </div>
+          {reportReady ? (
+            <>
+              <p className="sim-report-card-meta">
+                {reportCreatedAt || "Report ready"}
+                {simulationReport?.filename ? ` • ${simulationReport.filename}` : ""}
+              </p>
+              <pre className="sim-report-card-snippet">{reportSnippet}</pre>
+              <button
+                type="button"
+                className="sim-report-card-open"
+                onClick={() => setReportModalOpen(true)}
+              >
+                Open Report
+              </button>
+            </>
+          ) : reportErrorMessage ? (
+            <p className="sim-report-card-error">{reportErrorMessage}</p>
+          ) : reportPending ? (
+            <p className="sim-report-card-loading">Generating report artifact...</p>
+          ) : null}
+        </div>
+      ) : null}
 
       <div
         ref={tooltipRef}
@@ -1383,6 +1457,42 @@ function GraphCirclePanel({ graph = null, simulationData = null, simulationStatu
           </div>
         </div>
       )}
+
+      {reportModalOpen && reportReady ? (
+        <div
+          className="sim-report-modal-overlay"
+          onClick={() => setReportModalOpen(false)}
+          role="dialog"
+          aria-modal="true"
+          aria-label="Simulation report preview"
+        >
+          <div className="sim-report-modal" onClick={(event) => event.stopPropagation()}>
+            <div className="sim-report-modal-header">
+              <span className="sim-report-modal-title">LaTeX Report</span>
+              <div className="sim-report-modal-actions">
+                <button
+                  type="button"
+                  className="sim-report-modal-btn"
+                  onClick={handleDownloadLatexReport}
+                >
+                  Download .tex
+                </button>
+                <button
+                  type="button"
+                  className="sim-report-modal-close"
+                  onClick={() => setReportModalOpen(false)}
+                  aria-label="Close"
+                >
+                  ✕
+                </button>
+              </div>
+            </div>
+            <div className="sim-report-modal-scroll">
+              <pre className="sim-report-modal-text">{String(simulationReport?.content || "")}</pre>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -84,10 +84,10 @@ async def run_simulation(num_seeds=2, max_depth=3):
     all_agent_ids = [n['id'] for n in graph['nodes']]
     seeds = random.sample(all_agent_ids, num_seeds)
     
-    spark_news = (
-        "BREAKING: A leaked Texas legislative proposal suggests a 20% tax credit "
-        "for small businesses, offset by a 5% tax hike on luxury properties over $2M."
-    )
+    spark_news = (os.getenv("SIMULATION_STIMULUS") or "").strip()
+    if not spark_news:
+        print("❌ Error: set SIMULATION_STIMULUS before running this script.")
+        return
 
     # Initialize BFS queue: (target_agent, message_content, current_depth)
     queue = [(agent_id, spark_news, 0) for agent_id in seeds]
