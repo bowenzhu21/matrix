@@ -587,6 +587,17 @@ function normalizeCsvToken(value) {
   return String(value ?? "").trim().toLowerCase();
 }
 
+function isValidMasterCsv(headers, rows) {
+  if (!Array.isArray(headers) || headers.length === 0) return false;
+  if (!Array.isArray(rows) || rows.length === 0) return false;
+
+  const normalized = headers.map((header) => normalizeCsvToken(header));
+  const hasAgentId = normalized.includes("agent_id") || normalized.includes("id");
+  const hasConnections = normalized.includes("connections");
+  const hasSystemPrompt = normalized.includes("system_prompt");
+  return hasAgentId && hasConnections && hasSystemPrompt;
+}
+
 function isRepeatedHeaderRow(values, normalizedHeaders) {
   if (!Array.isArray(values) || values.length < normalizedHeaders.length) return false;
   for (let i = 0; i < normalizedHeaders.length; i += 1) {
@@ -674,7 +685,8 @@ function extractCsvPayload(text) {
     }
   }
 
-  return trimmed;
+  // Do not treat arbitrary prose as CSV.
+  return "";
 }
 
 function parseCsvRecords(csvText) {
@@ -837,7 +849,7 @@ function summarizeCsvArtifact(csvText) {
 
 function buildCsvSummaryMessage(csvText) {
   const { headers, rows } = parseCsvRecords(csvText);
-  if (!rows.length) return null;
+  if (!isValidMasterCsv(headers, rows)) return null;
 
   const n = rows.length;
   const lines = [`Here's a summary of the ${n} generated agent${n !== 1 ? "s" : ""}:`];
@@ -2416,27 +2428,85 @@ function App() {
         if (status.state === "done") {
           clearInterval(simulationPollRef.current);
           simulationPollRef.current = null;
-          const [resultsResponse, reportResponse] = await Promise.all([
+          const [resultsResponse, markdownReportResponse, latexReportResponse] = await Promise.all([
             fetch("/api/simulation/results"),
+            fetch("/api/simulation/report/file?format=md"),
             fetch("/api/simulation/report/file?format=tex")
           ]);
           if (resultsResponse.ok) {
             setSimulationData(await resultsResponse.json());
           }
-          if (reportResponse.ok) {
-            const reportPayload = await reportResponse.json();
-            setSimulationReport({ state: "ready", ...reportPayload });
-          } else {
-            let detail = "";
+          const parseReportArtifactResponse = async (response, label) => {
+            let rawText = "";
             try {
-              const errorPayload = await reportResponse.json();
-              detail = String(errorPayload?.detail || errorPayload?.error || "").trim();
+              rawText = await response.text();
             } catch {
-              detail = "";
+              rawText = "";
             }
+            let payload = null;
+            if (rawText) {
+              try {
+                payload = JSON.parse(rawText);
+              } catch {
+                payload = null;
+              }
+            }
+            if (response.ok) {
+              if (!payload || typeof payload !== "object") {
+                return { ok: false, error: `${label} report returned invalid JSON.` };
+              }
+              return { ok: true, payload };
+            }
+            const detail = String(payload?.detail || payload?.error || rawText || "").trim();
+            return {
+              ok: false,
+              error: detail || `${label} report request failed (${response.status}).`
+            };
+          };
+
+          const [markdownArtifact, latexArtifact] = await Promise.all([
+            parseReportArtifactResponse(markdownReportResponse, "Markdown"),
+            parseReportArtifactResponse(latexReportResponse, "LaTeX")
+          ]);
+
+          const formats = {};
+          const errors = [];
+
+          if (markdownArtifact.ok) {
+            const content = String(markdownArtifact.payload?.content || "").trim();
+            if (content) {
+              formats.md = { ...markdownArtifact.payload, content };
+            } else {
+              errors.push("Markdown report content was empty.");
+            }
+          } else {
+            errors.push(markdownArtifact.error);
+          }
+
+          if (latexArtifact.ok) {
+            const content = String(latexArtifact.payload?.content || "").trim();
+            if (content) {
+              formats.tex = { ...latexArtifact.payload, content };
+            } else {
+              errors.push("LaTeX report content was empty.");
+            }
+          } else {
+            errors.push(latexArtifact.error);
+          }
+
+          const hasAnyFormat = Object.keys(formats).length > 0;
+          if (hasAnyFormat) {
+            const primaryReport = formats.md || formats.tex || Object.values(formats)[0];
+            setSimulationReport({
+              state: "ready",
+              runId: primaryReport?.runId || "",
+              createdAt: primaryReport?.createdAt || "",
+              formats
+            });
+          } else {
             setSimulationReport({
               state: "error",
-              error: detail || `Could not load report (${reportResponse.status}).`
+              error: errors.filter(Boolean).join(" ") || "Could not load simulation report artifacts."
             });
           }
         } else if (status.state === "error") {
@@ -3057,10 +3127,11 @@ function App() {
       assistantTurnId: assistantPendingTurnId
     });
 
-    const csvPayload = extractCsvPayload(plannerText);
-    if (!csvPayload) return;
-    const { rows: csvRows, headers: csvHeaders } = parseCsvRecords(csvPayload);
-    const sampleCount = csvRows.length;
+  const csvPayload = extractCsvPayload(plannerText);
+  if (!csvPayload) return;
+  const { rows: csvRows, headers: csvHeaders } = parseCsvRecords(csvPayload);
+  if (!isValidMasterCsv(csvHeaders, csvRows)) return;
+  const sampleCount = csvRows.length;
     const derivedGraph = buildNetworkGraphFromCsv(csvPayload);
     setGraphPanelGraph(derivedGraph && Array.isArray(derivedGraph.nodes) ? derivedGraph : null);
     setChatMessages((prev) => [
@@ -3128,10 +3199,11 @@ function App() {
       assistantTurnId
     });
 
-    const csvPayload = extractCsvPayload(plannerText);
-    if (!csvPayload) return;
-    const { rows: csvRows, headers: csvHeaders } = parseCsvRecords(csvPayload);
-    const sampleCount = csvRows.length;
+  const csvPayload = extractCsvPayload(plannerText);
+  if (!csvPayload) return;
+  const { rows: csvRows, headers: csvHeaders } = parseCsvRecords(csvPayload);
+  if (!isValidMasterCsv(csvHeaders, csvRows)) return;
+  const sampleCount = csvRows.length;
     const derivedGraph = buildNetworkGraphFromCsv(csvPayload);
     setGraphPanelGraph(derivedGraph && Array.isArray(derivedGraph.nodes) ? derivedGraph : null);
     setChatMessages((prev) => [

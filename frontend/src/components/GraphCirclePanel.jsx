@@ -191,6 +191,235 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function parseInlineMarkdown(text, keyPrefix) {
+  if (!text) return [""];
+
+  const tokenRegex =
+    /(`[^`\n]+`|\*\*[^*\n][\s\S]*?\*\*|~~[^~\n][\s\S]*?~~|\*[^*\n][\s\S]*?\*|\[([^\]]+)\]\((https?:\/\/[^\s)]+)\))/g;
+  const nodes = [];
+  let cursor = 0;
+  let tokenIndex = 0;
+  let match = tokenRegex.exec(text);
+
+  while (match) {
+    const [rawToken] = match;
+    const start = match.index;
+
+    if (start > cursor) {
+      nodes.push(text.slice(cursor, start));
+    }
+
+    if (rawToken.startsWith("**") && rawToken.endsWith("**")) {
+      nodes.push(
+        <strong key={`${keyPrefix}-strong-${tokenIndex}`}>
+          {rawToken.slice(2, -2)}
+        </strong>
+      );
+    } else if (rawToken.startsWith("~~") && rawToken.endsWith("~~")) {
+      nodes.push(
+        <del key={`${keyPrefix}-del-${tokenIndex}`}>
+          {rawToken.slice(2, -2)}
+        </del>
+      );
+    } else if (rawToken.startsWith("*") && rawToken.endsWith("*")) {
+      nodes.push(
+        <em key={`${keyPrefix}-em-${tokenIndex}`}>
+          {rawToken.slice(1, -1)}
+        </em>
+      );
+    } else if (rawToken.startsWith("`") && rawToken.endsWith("`")) {
+      nodes.push(
+        <code key={`${keyPrefix}-code-${tokenIndex}`}>
+          {rawToken.slice(1, -1)}
+        </code>
+      );
+    } else if (rawToken.startsWith("[")) {
+      const linkMatch = rawToken.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
+      if (linkMatch) {
+        nodes.push(
+          <a
+            key={`${keyPrefix}-link-${tokenIndex}`}
+            href={linkMatch[2]}
+            target="_blank"
+            rel="noreferrer"
+          >
+            {linkMatch[1]}
+          </a>
+        );
+      } else {
+        nodes.push(rawToken);
+      }
+    } else {
+      nodes.push(rawToken);
+    }
+
+    cursor = start + rawToken.length;
+    tokenIndex += 1;
+    match = tokenRegex.exec(text);
+  }
+
+  if (cursor < text.length) {
+    nodes.push(text.slice(cursor));
+  }
+
+  return nodes;
+}
+
+function renderInlineWithBreaks(text, keyPrefix) {
+  const lines = text.split("\n");
+  const nodes = [];
+
+  for (let i = 0; i < lines.length; i += 1) {
+    nodes.push(...parseInlineMarkdown(lines[i], `${keyPrefix}-line-${i}`));
+    if (i < lines.length - 1) {
+      nodes.push(<br key={`${keyPrefix}-br-${i}`} />);
+    }
+  }
+
+  return nodes;
+}
+
+function renderMarkdownBlocks(markdownText, keyPrefix) {
+  const lines = String(markdownText || "").replace(/\r\n/g, "\n").split("\n");
+  const blocks = [];
+  const unorderedItemPattern = /^\s*[-*+•]\s+/;
+  const orderedItemPattern = /^\s*\d+\.\s+/;
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    if (!trimmed) {
+      i += 1;
+      continue;
+    }
+
+    if (trimmed.startsWith("```")) {
+      const language = trimmed.slice(3).trim();
+      i += 1;
+      const codeLines = [];
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        codeLines.push(lines[i]);
+        i += 1;
+      }
+      if (i < lines.length) i += 1;
+      blocks.push(
+        <pre key={`${keyPrefix}-pre-${blocks.length}`} className="sim-report-markdown-pre">
+          <code data-language={language || undefined}>{codeLines.join("\n")}</code>
+        </pre>
+      );
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)$/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const headingText = headingMatch[2];
+      const HeadingTag = `h${level}`;
+      blocks.push(
+        <HeadingTag key={`${keyPrefix}-h-${blocks.length}`}>
+          {renderInlineWithBreaks(headingText, `${keyPrefix}-h-${blocks.length}`)}
+        </HeadingTag>
+      );
+      i += 1;
+      continue;
+    }
+
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      blocks.push(<hr key={`${keyPrefix}-hr-${blocks.length}`} />);
+      i += 1;
+      continue;
+    }
+
+    if (/^\s*>\s?/.test(line)) {
+      const quoteLines = [];
+      while (i < lines.length && /^\s*>\s?/.test(lines[i])) {
+        quoteLines.push(lines[i].replace(/^\s*>\s?/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <blockquote key={`${keyPrefix}-quote-${blocks.length}`}>
+          {renderInlineWithBreaks(quoteLines.join("\n"), `${keyPrefix}-quote-${blocks.length}`)}
+        </blockquote>
+      );
+      continue;
+    }
+
+    if (unorderedItemPattern.test(line)) {
+      const items = [];
+      while (i < lines.length && unorderedItemPattern.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*[-*+•]\s+/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <ul key={`${keyPrefix}-ul-${blocks.length}`}>
+          {items.map((item, index) => (
+            <li key={`${keyPrefix}-ul-item-${index}`}>
+              {renderInlineWithBreaks(item, `${keyPrefix}-ul-item-${index}`)}
+            </li>
+          ))}
+        </ul>
+      );
+      continue;
+    }
+
+    if (orderedItemPattern.test(line)) {
+      const items = [];
+      while (i < lines.length && orderedItemPattern.test(lines[i])) {
+        items.push(lines[i].replace(/^\s*\d+\.\s+/, ""));
+        i += 1;
+      }
+      blocks.push(
+        <ol key={`${keyPrefix}-ol-${blocks.length}`}>
+          {items.map((item, index) => (
+            <li key={`${keyPrefix}-ol-item-${index}`}>
+              {renderInlineWithBreaks(item, `${keyPrefix}-ol-item-${index}`)}
+            </li>
+          ))}
+        </ol>
+      );
+      continue;
+    }
+
+    const paragraphLines = [line];
+    i += 1;
+    while (i < lines.length) {
+      const candidate = lines[i];
+      const candidateTrimmed = candidate.trim();
+      if (!candidateTrimmed) break;
+      if (
+        candidateTrimmed.startsWith("```") ||
+        /^(#{1,6})\s+/.test(candidate) ||
+        /^(-{3,}|\*{3,}|_{3,})$/.test(candidateTrimmed) ||
+        /^\s*>\s?/.test(candidate) ||
+        unorderedItemPattern.test(candidate) ||
+        orderedItemPattern.test(candidate)
+      ) {
+        break;
+      }
+      paragraphLines.push(candidate);
+      i += 1;
+    }
+
+    blocks.push(
+      <p key={`${keyPrefix}-p-${blocks.length}`}>
+        {renderInlineWithBreaks(paragraphLines.join("\n"), `${keyPrefix}-p-${blocks.length}`)}
+      </p>
+    );
+  }
+
+  return blocks;
+}
+
+function renderMarkdownContent(markdownText, keyPrefix) {
+  const nodes = renderMarkdownBlocks(markdownText, keyPrefix);
+  if (!nodes || (Array.isArray(nodes) && nodes.length === 0)) {
+    return <p>{markdownText}</p>;
+  }
+  return nodes;
+}
+
 function buildAvatarContext(selectedNode, simulationEntry) {
   const metadata =
     selectedNode?.metadata && typeof selectedNode.metadata === "object"
@@ -351,6 +580,7 @@ function GraphCirclePanel({
   const [useVideoFeed, setUseVideoFeed] = useState(false);
   const [portraitFailed, setPortraitFailed] = useState(false);
   const [reportModalOpen, setReportModalOpen] = useState(false);
+  const [activeReportFormat, setActiveReportFormat] = useState("md");
   const selectedNodeIdRef = useRef("");
   const hoveredNodeIdRef = useRef("");
   const hoverPointerRef = useRef({ x: 0, y: 0 });
@@ -1065,22 +1295,49 @@ function GraphCirclePanel({
   const simError = simulationStatus?.state === "error";
   const simDay = simulationStatus?.day || 0;
   const simBarFill = simRunning ? Math.round((simDay / 5) * 100) : simDone ? 100 : 0;
-  const reportReady = Boolean(
-    simulationReport?.state === "ready" &&
-      typeof simulationReport?.content === "string" &&
-      simulationReport.content.trim()
-  );
+  const reportFormats = useMemo(() => {
+    const formats = [];
+    const markdownContent = String(simulationReport?.formats?.md?.content || "").trim();
+    const latexContent = String(simulationReport?.formats?.tex?.content || "").trim();
+    if (markdownContent) {
+      formats.push({
+        id: "md",
+        label: "Markdown",
+        extension: ".md",
+        mimeType: "text/markdown;charset=utf-8",
+        filename: String(simulationReport?.formats?.md?.filename || "simulation-report.md"),
+        content: markdownContent
+      });
+    }
+    if (latexContent) {
+      formats.push({
+        id: "tex",
+        label: "LaTeX",
+        extension: ".tex",
+        mimeType: "text/plain;charset=utf-8",
+        filename: String(simulationReport?.formats?.tex?.filename || "simulation-report.tex"),
+        content: latexContent
+      });
+    }
+    return formats;
+  }, [simulationReport]);
+  const preferredReportFormat = reportFormats.some((format) => format.id === "md")
+    ? "md"
+    : reportFormats[0]?.id || "";
+  const activeReportArtifact = useMemo(() => {
+    if (reportFormats.length === 0) return null;
+    return (
+      reportFormats.find((format) => format.id === activeReportFormat) ||
+      reportFormats.find((format) => format.id === preferredReportFormat) ||
+      reportFormats[0]
+    );
+  }, [activeReportFormat, preferredReportFormat, reportFormats]);
+  const reportReady = Boolean(simulationReport?.state === "ready" && reportFormats.length > 0);
   const reportPending = Boolean(simDone && !reportReady && simulationReport?.state !== "error");
   const reportErrorMessage =
     simulationReport?.state === "error"
       ? String(simulationReport?.error || "Report generation failed.")
       : "";
-  const reportSnippet = useMemo(() => {
-    if (!reportReady) return "";
-    const lines = String(simulationReport.content || "").split("\n");
-    return lines.slice(0, 14).join("\n");
-  }, [reportReady, simulationReport]);
-  const reportCreatedAt = reportReady ? formatReportTimestamp(simulationReport?.createdAt) : "";
   const showGraphActionButtons = simDone && Boolean(selectedNodeId);
   const canCallSelectedNode = Boolean(simDone && selectedNodeId && selectedSimulation && selectedAvatarAgent);
   const showHoverTooltip = Boolean(hoveredNodeId && hoveredNode);
@@ -1115,11 +1372,18 @@ function GraphCirclePanel({
     }
   };
 
-  const handleDownloadLatexReport = () => {
-    if (!reportReady) return;
-    const content = String(simulationReport?.content || "");
-    const filename = String(simulationReport?.filename || "simulation-report.tex");
-    const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  useEffect(() => {
+    if (!reportFormats.some((format) => format.id === activeReportFormat)) {
+      setActiveReportFormat(preferredReportFormat);
+    }
+  }, [activeReportFormat, preferredReportFormat, reportFormats]);
+
+  const downloadReportArtifact = (artifact) => {
+    if (!artifact) return;
+    const content = String(artifact.content || "");
+    if (!content.trim()) return;
+    const filename = String(artifact.filename || `simulation-report${artifact.extension || ".txt"}`);
+    const blob = new Blob([content], { type: artifact.mimeType || "text/plain;charset=utf-8" });
     const url = window.URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -1128,6 +1392,17 @@ function GraphCirclePanel({
     anchor.click();
     document.body.removeChild(anchor);
     window.setTimeout(() => window.URL.revokeObjectURL(url), 1500);
+  };
+
+  const handleOpenReportModal = () => {
+    if (!reportReady) return;
+    setActiveReportFormat(preferredReportFormat);
+    setReportModalOpen(true);
+  };
+
+  const handleDownloadActiveReport = () => {
+    if (!activeReportArtifact) return;
+    downloadReportArtifact(activeReportArtifact);
   };
 
   const handleStartCall = async () => {
@@ -1230,25 +1505,14 @@ function GraphCirclePanel({
 
       {simDone ? (
         <div className={`sim-report-card ${reportReady ? "ready" : ""} ${reportErrorMessage ? "error" : ""}`}>
-          <div className="sim-report-card-head">
-            <p className="sim-report-card-title">Scientific Simulation Report</p>
-            <span className="sim-report-card-badge">LaTeX</span>
-          </div>
           {reportReady ? (
-            <>
-              <p className="sim-report-card-meta">
-                {reportCreatedAt || "Report ready"}
-                {simulationReport?.filename ? ` • ${simulationReport.filename}` : ""}
-              </p>
-              <pre className="sim-report-card-snippet">{reportSnippet}</pre>
-              <button
-                type="button"
-                className="sim-report-card-open"
-                onClick={() => setReportModalOpen(true)}
-              >
-                Open Report
-              </button>
-            </>
+            <button
+              type="button"
+              className="sim-report-card-open"
+              onClick={handleOpenReportModal}
+            >
+              Open Report
+            </button>
           ) : reportErrorMessage ? (
             <p className="sim-report-card-error">{reportErrorMessage}</p>
           ) : reportPending ? (
@@ -1397,18 +1661,10 @@ function GraphCirclePanel({
 
       {callCardOpen && activeCallAgentId ? (
         <div className="graph-call-card" role="dialog" aria-label="Agent call card">
-          <div className="graph-call-card-header">
-            <span className="graph-call-card-name">{activeCallAgentName}</span>
-            <button
-              type="button"
-              className="graph-call-card-close"
-              onClick={disconnectCall}
-              aria-label="End call"
-            >
-              ✕
-            </button>
-          </div>
           <div className="graph-call-card-media">
+            <div className="graph-call-card-overlay-top">
+              <span className="graph-call-card-name">{activeCallAgentName}</span>
+            </div>
             {useVideoFeed ? (
               <div ref={videoHostRef} className="graph-call-card-video-host" />
             ) : !portraitFailed ? (
@@ -1422,8 +1678,16 @@ function GraphCirclePanel({
             {!useVideoFeed && portraitFailed ? (
               <div className="graph-call-card-photo-fallback">{activeCallAgentName}</div>
             ) : null}
+            <button
+              type="button"
+              className="graph-call-card-hangup"
+              onClick={disconnectCall}
+              aria-label="End call"
+              title="End call"
+            >
+              ✕
+            </button>
           </div>
-          <p className="graph-call-card-status">{callStatus}</p>
           {callError ? <p className="graph-call-card-error">{callError}</p> : null}
           <div ref={audioHostRef} className="graph-call-card-audio-host" />
         </div>
@@ -1468,14 +1732,32 @@ function GraphCirclePanel({
         >
           <div className="sim-report-modal" onClick={(event) => event.stopPropagation()}>
             <div className="sim-report-modal-header">
-              <span className="sim-report-modal-title">LaTeX Report</span>
+              <span className="sim-report-modal-title">Simulation Report</span>
               <div className="sim-report-modal-actions">
+                {reportFormats.length > 1 ? (
+                  <div className="sim-report-modal-format-toggle" role="tablist" aria-label="Report format">
+                    {reportFormats.map((format) => (
+                      <button
+                        key={format.id}
+                        type="button"
+                        role="tab"
+                        aria-selected={activeReportArtifact?.id === format.id}
+                        className={`sim-report-modal-format-btn ${
+                          activeReportArtifact?.id === format.id ? "active" : ""
+                        }`}
+                        onClick={() => setActiveReportFormat(format.id)}
+                      >
+                        {format.label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 <button
                   type="button"
                   className="sim-report-modal-btn"
-                  onClick={handleDownloadLatexReport}
+                  onClick={handleDownloadActiveReport}
                 >
-                  Download .tex
+                  Download {activeReportArtifact?.extension || ""}
                 </button>
                 <button
                   type="button"
@@ -1488,7 +1770,15 @@ function GraphCirclePanel({
               </div>
             </div>
             <div className="sim-report-modal-scroll">
-              <pre className="sim-report-modal-text">{String(simulationReport?.content || "")}</pre>
+              {activeReportArtifact?.id === "md" ? (
+                <div className="sim-report-markdown">
+                  {renderMarkdownContent(String(activeReportArtifact?.content || ""), "sim-report-markdown")}
+                </div>
+              ) : (
+                <pre className="sim-report-modal-text latex">
+                  {String(activeReportArtifact?.content || "")}
+                </pre>
+              )}
             </div>
           </div>
         </div>
