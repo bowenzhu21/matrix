@@ -212,7 +212,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-_portraits_refresh_lock = threading.Lock()
+_assets_refresh_lock = threading.Lock()
 
 
 def _load_planner_system_prompt() -> str:
@@ -920,7 +920,22 @@ def _refresh_agent_portraits(agents_csv_path: Path) -> Path:
 
 
 def _refresh_agent_portraits_background(agents_csv_path: Path) -> None:
-    with _portraits_refresh_lock:
+    with _assets_refresh_lock:
+        try:
+            generated_path = _refresh_agent_portraits(agents_csv_path)
+            print(f"[INFO] Portrait generation finished: {generated_path}")
+        except Exception as exc:  # pragma: no cover - defensive background guard
+            print(f"[WARN] Portrait generation failed in background: {exc}")
+
+
+def _refresh_agent_assets_background(agents_csv_path: Path) -> None:
+    with _assets_refresh_lock:
+        try:
+            mapping_path = _refresh_agent_avatar_mapping(agents_csv_path)
+            print(f"[INFO] Avatar mapping refresh finished: {mapping_path}")
+        except Exception as exc:  # pragma: no cover - defensive background guard
+            print(f"[WARN] Avatar mapping refresh failed in background: {exc}")
+
         try:
             generated_path = _refresh_agent_portraits(agents_csv_path)
             print(f"[INFO] Portrait generation finished: {generated_path}")
@@ -1148,25 +1163,25 @@ async def planner_context_stream(
 @app.post("/api/agents/generated-csv", response_model=SaveGeneratedCsvResponse)
 async def save_generated_agents_csv(payload: SaveGeneratedCsvRequest) -> SaveGeneratedCsvResponse:
     portraits_index_path: Path | None = _portraits_index_path()
+    avatar_mapping_path: Path = _agent_mapping_path()
     try:
         output_path, row_count = _write_generated_agents_csv(payload.csv_text)
-        mapping_path = _refresh_agent_avatar_mapping(output_path)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
         raise HTTPException(status_code=500, detail=f"Failed to write CSV file: {exc}") from exc
 
-    portraits_thread = threading.Thread(
-        target=_refresh_agent_portraits_background,
+    assets_thread = threading.Thread(
+        target=_refresh_agent_assets_background,
         args=(output_path,),
         daemon=True,
     )
-    portraits_thread.start()
+    assets_thread.start()
 
     return SaveGeneratedCsvResponse(
         saved_path=str(output_path),
         row_count=row_count,
-        avatar_mapping_path=str(mapping_path),
+        avatar_mapping_path=str(avatar_mapping_path),
         portraits_index_path=str(portraits_index_path) if portraits_index_path else None,
     )
 
@@ -1361,10 +1376,24 @@ SIMULATION_REPORTS_DIR = Path(__file__).resolve().parent / "reports"
 SIMULATION_DAYS = 5
 SIMULATION_DEFAULT_STIMULUS = ""
 SIMULATION_NEWS_SPARK = SIMULATION_DEFAULT_STIMULUS
-SIMULATION_MODAL_ENDPOINT = os.getenv(
-    "SIM_MODAL_ENDPOINT",
-    "https://matrix--deepseek-r1-1p5b-deepseekserver-openai-server.modal.run",
-).strip().rstrip("/") + "/v1/chat/completions"
+
+
+def _chat_completion_endpoint_for(raw_endpoint: str) -> str:
+    trimmed = str(raw_endpoint or "").strip().rstrip("/")
+    if not trimmed:
+        return ""
+    if trimmed.endswith("/v1/chat/completions"):
+        return trimmed
+    return f"{trimmed}/v1/chat/completions"
+
+
+_default_sim_base = (
+    os.getenv("SIM_MODAL_ENDPOINT", "").strip()
+    or os.getenv("PLANNER_MODEL_ENDPOINT", "").strip()
+    or os.getenv("REPORT_MODEL_ENDPOINT", "").strip()
+    or "https://matrix--deepseek-r1-1p5b-deepseekserver-openai-server.modal.run"
+)
+SIMULATION_MODAL_ENDPOINT = _chat_completion_endpoint_for(_default_sim_base)
 
 _sim_status: dict = {
     "state": "idle",
@@ -1749,7 +1778,20 @@ async def _call_sim_agent(
     try:
         async with httpx.AsyncClient(timeout=120.0, trust_env=False) as client:
             resp = await client.post(SIMULATION_MODAL_ENDPOINT, json=payload)
-            content = resp.json()["choices"][0]["message"]["content"]
+            if resp.status_code >= 400:
+                detail = (resp.text or "").replace("\n", " ").strip()
+                raise RuntimeError(f"Simulation endpoint HTTP {resp.status_code}: {detail[:220]}")
+            try:
+                parsed = resp.json()
+            except json.JSONDecodeError as exc:
+                snippet = (resp.text or "").replace("\n", " ").strip()
+                raise RuntimeError(
+                    f"Simulation endpoint returned non-JSON: {snippet[:220] or '(empty body)'}"
+                ) from exc
+
+            content = parsed.get("choices", [{}])[0].get("message", {}).get("content", "")
+            if not isinstance(content, str) or not content.strip():
+                raise RuntimeError("Simulation endpoint returned empty completion content.")
             if "</think>" in content:
                 content = content.split("</think>", 1)[1].strip()
             return content.strip()

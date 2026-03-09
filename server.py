@@ -17,7 +17,9 @@ Usage:
 
 from __future__ import annotations
 
+import json
 import os
+import shutil
 import time
 
 import modal
@@ -32,11 +34,17 @@ DEFAULT_SMOKE_TEST_URL = os.getenv("DEEPSEEK_SMOKE_TEST_URL", "")
 
 # Runtime knobs (can be overridden with env vars at deploy time).
 # Reduce defaults for initial testing to avoid large GPU requests.
-GPU_CONFIG = os.getenv("DEEPSEEK_GPU", "A100-80GB:1")
-TENSOR_PARALLEL_SIZE = int(os.getenv("DEEPSEEK_TP", "1"))
-MAX_MODEL_LEN = int(os.getenv("DEEPSEEK_MAX_MODEL_LEN", "8192"))
-GPU_MEMORY_UTILIZATION = os.getenv("DEEPSEEK_GPU_MEMORY_UTIL", "0.85")
+GPU_CONFIG = os.getenv("DEEPSEEK_GPU", "A100-80GB:2")
+TENSOR_PARALLEL_SIZE = int(os.getenv("DEEPSEEK_TP", "2"))
+MAX_MODEL_LEN = int(os.getenv("DEEPSEEK_MAX_MODEL_LEN", "32768"))
+GPU_MEMORY_UTILIZATION = os.getenv("DEEPSEEK_GPU_MEMORY_UTIL", "0.92")
 WEB_STARTUP_TIMEOUT_SEC = int(os.getenv("DEEPSEEK_WEB_STARTUP_TIMEOUT_SEC", "1800"))
+MODEL_MARKER_FILE = os.path.join(MODEL_DIR, ".model_repo_id")
+FORCE_MODEL_DOWNLOAD = os.getenv("DEEPSEEK_FORCE_MODEL_DOWNLOAD", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 image = (
     modal.Image.from_registry(
@@ -68,19 +76,98 @@ def _model_exists() -> bool:
     return all(os.path.exists(path) for path in required)
 
 
-def _download_model_if_needed() -> None:
-    if _model_exists():
+def _read_model_marker() -> str:
+    try:
+        return open(MODEL_MARKER_FILE, "r", encoding="utf-8").read().strip()
+    except OSError:
+        return ""
+
+
+def _write_model_marker(model_id: str) -> None:
+    os.makedirs(MODEL_DIR, exist_ok=True)
+    with open(MODEL_MARKER_FILE, "w", encoding="utf-8") as f:
+        f.write(model_id.strip())
+        f.write("\n")
+
+
+def _looks_like_expected_model(config_path: str) -> bool:
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return False
+
+    hint = str(config.get("_name_or_path", "")).strip().lower()
+    expected = MODEL_ID.strip().lower()
+    if hint and (hint in expected or expected in hint):
+        return True
+
+    expected_leaf = expected.split("/")[-1]
+    return bool(hint and expected_leaf and expected_leaf in hint)
+
+
+def _model_matches_expected() -> bool:
+    marker = _read_model_marker()
+    if marker:
+        return marker == MODEL_ID
+
+    config_path = os.path.join(MODEL_DIR, "config.json")
+    return _looks_like_expected_model(config_path)
+
+
+def _wipe_model_dir() -> None:
+    if not os.path.isdir(MODEL_DIR):
+        os.makedirs(MODEL_DIR, exist_ok=True)
         return
 
+    for entry in os.listdir(MODEL_DIR):
+        path = os.path.join(MODEL_DIR, entry)
+        try:
+            if os.path.isdir(path) and not os.path.islink(path):
+                shutil.rmtree(path)
+            else:
+                os.unlink(path)
+        except OSError:
+            # Skip stubborn leftovers; snapshot_download will refill required files.
+            pass
+
+
+def _download_model(force: bool = False) -> None:
     from huggingface_hub import snapshot_download
 
-    print(f"Model files missing under {MODEL_DIR}. Downloading {MODEL_ID}...")
+    if force:
+        print(f"Refreshing model files under {MODEL_DIR} for {MODEL_ID}...")
+        _wipe_model_dir()
+    else:
+        print(f"Model files missing under {MODEL_DIR}. Downloading {MODEL_ID}...")
+
     snapshot_download(
         repo_id=MODEL_ID,
         local_dir=MODEL_DIR,
     )
+    _write_model_marker(MODEL_ID)
     volume.commit()
     print("Model download complete.")
+
+
+def _download_model_if_needed() -> None:
+    if FORCE_MODEL_DOWNLOAD:
+        print("DEEPSEEK_FORCE_MODEL_DOWNLOAD is set; forcing fresh model download.")
+        _download_model(force=True)
+        return
+
+    if not _model_exists():
+        _download_model(force=False)
+        return
+
+    if not _model_matches_expected():
+        marker = _read_model_marker() or "(missing)"
+        print(
+            "Model volume contents do not match expected repo. "
+            f"marker={marker}, expected={MODEL_ID}. Re-downloading."
+        )
+        _download_model(force=True)
+        return
 
 
 @app.function(
@@ -110,6 +197,18 @@ def openai_server() -> None:
     import subprocess
 
     _download_model_if_needed()
+
+    print(
+        "Runtime config:",
+        {
+            "model_id": MODEL_ID,
+            "served_model_name": SERVED_MODEL_NAME,
+            "max_model_len": MAX_MODEL_LEN,
+            "tensor_parallel_size": TENSOR_PARALLEL_SIZE,
+            "gpu": GPU_CONFIG,
+            "volume_name": VOLUME_NAME,
+        },
+    )
 
     cmd = [
         "vllm",
